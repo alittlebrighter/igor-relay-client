@@ -2,7 +2,6 @@ package relayClient
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
