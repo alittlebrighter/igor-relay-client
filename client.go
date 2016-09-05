@@ -2,7 +2,6 @@ package relayClient
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -38,11 +37,13 @@ func (rc *RelayClient) OpenSocket() (relayChan chan []byte, err error) {
 
 	relayChan = make(chan []byte)
 	go func() {
-		for {
+		for msg {
 			var msg = make([]byte, 512)
 			n, err := ws.Read(msg)
 			if err != nil {
 				log.Printf("Error reading incoming message: %s", err.Error())
+				close(relayChan)
+				break
 			}
 
 			decrypted, err := security.Decrypt(rc.key, msg[:n])
@@ -89,6 +90,10 @@ func (rc *RelayClient) sendMessageHTTP(destination string, msg interface{}, mars
 		return
 	}
 
-	_, err = ioutil.ReadAll(io.LimitReader(response.Body, 1048576))
+	responseBody, err := ioutil.ReadAll(io.LimitReader(response.Body, 1048576))
+	if err != nil {
+		return
+	}
+	log.Printf("Response: %s\n", responseBody)
 	return
 }

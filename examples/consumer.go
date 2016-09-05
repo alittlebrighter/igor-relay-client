@@ -20,11 +20,7 @@ func main() {
 		log.Fatalf("Could not open websocket to relay server: %s", err.Error())
 	}
 
-	for {
-		msg := <-relayChan
-		if string(msg) == "EXIT" {
-			break
-		}
+	for msg := range relayChan {
 		log.Printf("Received command: %s", string(msg))
 	}
 }
