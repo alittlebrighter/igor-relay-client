@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"io"
 )
 
@@ -30,6 +31,15 @@ func Encrypt(key, msg []byte) (encMsg []byte, err error) {
 	return
 }
 
+func EncryptToString(key, msg []byte) (encMsg string, err error) {
+	data, err := Encrypt(key, msg)
+	if err != nil {
+		return
+	}
+	encMsg = base64.StdEncoding.EncodeToString(data)
+	return
+}
+
 func Decrypt(key, encMsg []byte) (msg []byte, err error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -44,6 +54,14 @@ func Decrypt(key, encMsg []byte) (msg []byte, err error) {
 	nonce := encMsg[:nonceLen]
 	msg, err = aesgcm.Open(nil, nonce, encMsg[nonceLen:], nil)
 	return
+}
+
+func DecryptFromString(key []byte, encMsg string) ([]byte, error) {
+	data, err := base64.StdEncoding.DecodeString(encMsg)
+	if err != nil {
+		return nil, err
+	}
+	return Decrypt(key, data)
 }
 
 func NewNonce() (nonce []byte, err error) {

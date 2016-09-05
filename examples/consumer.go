@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 
@@ -13,14 +14,14 @@ func main() {
 	key := flag.String("key", "AES256Key-32Characters1234567890", "The symmetric key to use.")
 	flag.Parse()
 
-	rClient := relayClient.NewRelayClient(*id, *host, []byte(*key))
+	rClient := relayClient.NewRelayClient(*id, *host, []byte(*key), json.Marshal, json.Unmarshal)
 
-	relayChan, err := rClient.OpenSocket()
+	err := rClient.OpenSocket()
 	if err != nil {
 		log.Fatalf("Could not open websocket to relay server: %s", err.Error())
 	}
 
-	for msg := range relayChan {
+	for msg := range rClient.ReadMessages() {
 		log.Printf("Received command: %s", string(msg))
 	}
 }

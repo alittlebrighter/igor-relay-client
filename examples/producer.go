@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/alittlebrighter/treehouse-relay-client"
@@ -18,7 +19,18 @@ func main() {
 	key := flag.String("key", "AES256Key-32Characters1234567890", "The symmetric key to use.")
 	flag.Parse()
 
-	rClient := relayClient.NewRelayClient(*id, *host, []byte(*key))
+	rClient := relayClient.NewRelayClient(*id, *host, []byte(*key), json.Marshal, json.Unmarshal)
+
+	err := rClient.OpenSocket()
+	if err != nil {
+		log.Fatalf("Could not open websocket to relay server: %s", err.Error())
+	}
+
+	go func() {
+		for msg := range rClient.ReadMessages() {
+			fmt.Printf("\nReceived message: %s\n", string(msg))
+		}
+	}()
 
 	for {
 		msg := new(Message)
@@ -33,9 +45,25 @@ func main() {
 		fmt.Print("Set to mode: ")
 		msg.Instruction.Mode, _ = reader.ReadString('\n')
 		msg.Instruction.Mode = strings.TrimSpace(msg.Instruction.Mode)
-		_, err := rClient.SendMessage(msg.Controller, msg, json.Marshal)
+		fmt.Print("TTL: ")
+		uresponse, _ := reader.ReadString('\n')
+		ttl, err := strconv.Atoi(uresponse)
 		if err != nil {
-			log.Printf("Error sending message: %s\n", err.Error())
+			ttl = 0
+		}
+
+		env, err := relayClient.NewEnvelope(msg.Controller, int64(ttl), msg, rClient)
+		if err != nil {
+			log.Println("Error building envelope: " + err.Error())
+			continue
+		}
+
+		response, err := rClient.SendMessage(env)
+		if err != nil {
+			log.Println("Error sending message: " + err.Error())
+			continue
+		} else {
+			log.Println("Response received: " + string(response))
 		}
 	}
 }
