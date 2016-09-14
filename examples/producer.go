@@ -7,28 +7,38 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"strings"
 
-	"github.com/alittlebrighter/treehouse-relay-client"
+	"github.com/alittlebrighter/igor-relay-client"
+	"github.com/alittlebrighter/igor-relay-client/security"
 )
 
 func main() {
 	id := flag.String("id", "pi-0", "Identification to be used on the server.")
 	host := flag.String("host", "localhost:12345", "The relay host to connect to.")
-	key := flag.String("key", "AES256Key-32Characters1234567890", "The symmetric key to use.")
+	//key := flag.String("key", "AES256Key-32Characters1234567890", "The symmetric key to use.")
 	flag.Parse()
 
-	rClient := relayClient.NewRelayClient(*id, *host, []byte(*key), json.Marshal, json.Unmarshal)
-
-	err := rClient.OpenSocket()
+	err := security.GenerateKeyPair()
 	if err != nil {
-		log.Fatalf("Could not open websocket to relay server: %s", err.Error())
+		log.Fatalf("Error generating key pair: %s", err.Error())
+	}
+
+	rClient, _ := relayClient.NewRelayClient(*id, *host, json.Marshal, json.Unmarshal)
+
+	err = rClient.OpenSocket()
+	if err != nil {
+		log.Printf("Could not open websocket to relay server: %s", err.Error())
 	}
 
 	go func() {
-		for msg := range rClient.ReadMessages() {
-			fmt.Printf("\nReceived message: %s\n", string(msg))
+		msgs, err := rClient.ReadMessages()
+		if err != nil {
+			fmt.Printf("Error receiving message: %s\n", err.Error())
+		}
+
+		for msg := range msgs {
+			fmt.Printf("\nReceived message: %+v\n", msg)
 		}
 	}()
 
@@ -45,14 +55,16 @@ func main() {
 		fmt.Print("Set to mode: ")
 		msg.Instruction.Mode, _ = reader.ReadString('\n')
 		msg.Instruction.Mode = strings.TrimSpace(msg.Instruction.Mode)
-		fmt.Print("TTL: ")
-		uresponse, _ := reader.ReadString('\n')
-		ttl, err := strconv.Atoi(uresponse)
-		if err != nil {
-			ttl = 0
-		}
-
-		env, err := relayClient.NewEnvelope(msg.Controller, int64(ttl), msg, rClient)
+		/*
+			fmt.Print("TTL: ")
+			uresponse, _ := reader.ReadString('\n')
+			ttl, err := strconv.Atoi(strings.TrimSpace(uresponse))
+			if err != nil {
+				fmt.Println("Error converting string to int: " + err.Error())
+				ttl = 0
+			}
+		*/
+		env, err := rClient.NewEnvelope(msg.Controller, nil, msg)
 		if err != nil {
 			log.Println("Error building envelope: " + err.Error())
 			continue

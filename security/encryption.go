@@ -6,11 +6,49 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"io"
+	"io/ioutil"
+	"os"
 )
 
-const nonceLen = 12
+const (
+	nonceLen        = 12
+	symmetricKeyLen = 32
+)
 
-func Encrypt(key, msg []byte) (encMsg []byte, err error) {
+var sharedKeyFile = "shared.key"
+
+func GenerateSharedKey() error {
+	os.Remove(sharedKeyFile)
+
+	key, err := newSecureRandom(symmetricKeyLen)
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(sharedKeyFile, key, 0400)
+}
+
+func SetSharedKeyFile(file string) {
+	sharedKeyFile = file
+}
+
+func fetchSharedKey() ([]byte, error) {
+	return ioutil.ReadFile(sharedKeyFile)
+}
+
+func newSecureRandom(size int) (random []byte, err error) {
+	random = make([]byte, size)
+	_, err = io.ReadFull(rand.Reader, random)
+	return
+}
+
+// Encrypt encrypts a message ([]byte) with AES GCM and prepends the nonce to the associated []byte
+func Encrypt(msg []byte) (encMsg []byte, err error) {
+	key, err := fetchSharedKey()
+	if err != nil {
+		return
+	}
+
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return
@@ -21,7 +59,7 @@ func Encrypt(key, msg []byte) (encMsg []byte, err error) {
 		return
 	}
 
-	nonce, err := NewNonce()
+	nonce, err := newSecureRandom(nonceLen)
 	if err != nil {
 		return
 	}
@@ -31,8 +69,9 @@ func Encrypt(key, msg []byte) (encMsg []byte, err error) {
 	return
 }
 
-func EncryptToString(key, msg []byte) (encMsg string, err error) {
-	data, err := Encrypt(key, msg)
+// EncryptToString encrypts a message, prepends the nonce, and base64 encodes the resulting []byte
+func EncryptToString(msg []byte) (encMsg string, err error) {
+	data, err := Encrypt(msg)
 	if err != nil {
 		return
 	}
@@ -40,7 +79,13 @@ func EncryptToString(key, msg []byte) (encMsg string, err error) {
 	return
 }
 
-func Decrypt(key, encMsg []byte) (msg []byte, err error) {
+// Decrypt decrypts a message ([]byte) encrypted with AES GCM
+func Decrypt(encMsg []byte) (msg []byte, err error) {
+	key, err := fetchSharedKey()
+	if err != nil {
+		return
+	}
+
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return
@@ -56,16 +101,11 @@ func Decrypt(key, encMsg []byte) (msg []byte, err error) {
 	return
 }
 
-func DecryptFromString(key []byte, encMsg string) ([]byte, error) {
+// DecryptFromString decodes a string from base64 to a []byte and then decrypts the result with AES GCM
+func DecryptFromString(encMsg string) ([]byte, error) {
 	data, err := base64.StdEncoding.DecodeString(encMsg)
 	if err != nil {
 		return nil, err
 	}
-	return Decrypt(key, data)
-}
-
-func NewNonce() (nonce []byte, err error) {
-	nonce = make([]byte, nonceLen)
-	_, err = io.ReadFull(rand.Reader, nonce)
-	return
+	return Decrypt(data)
 }

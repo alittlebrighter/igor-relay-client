@@ -8,17 +8,20 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"golang.org/x/net/websocket"
 
-	"github.com/alittlebrighter/treehouse-relay-client/security"
+	"github.com/alittlebrighter/igor-relay-client/security"
+	"github.com/alittlebrighter/switchboard/util"
 )
+
+const byteChunkSize = 256
 
 type RelayClient struct {
 	id           string
 	relayHost    string
 	socketConn   *websocket.Conn
-	key          []byte
 	marshaller   func(interface{}) ([]byte, error)
 	unmarshaller func(data []byte, v interface{}) error
 }
@@ -31,8 +34,9 @@ func (rc *RelayClient) Unmarshaller() func(data []byte, v interface{}) error {
 	return rc.unmarshaller
 }
 
-func NewRelayClient(id, relayHost string, key []byte, marshaller func(interface{}) ([]byte, error), unmarshaller func(data []byte, v interface{}) error) *RelayClient {
-	return &RelayClient{id: id, relayHost: relayHost, key: key, marshaller: marshaller, unmarshaller: unmarshaller}
+func NewRelayClient(id, relayHost string, marshaller func(interface{}) ([]byte, error), unmarshaller func(data []byte, v interface{}) error) (*RelayClient, error) {
+	err := security.GenerateSharedKey()
+	return &RelayClient{id: id, relayHost: relayHost, marshaller: marshaller, unmarshaller: unmarshaller}, err
 }
 
 func (rc *RelayClient) OpenSocket() error {
@@ -50,33 +54,25 @@ func (rc *RelayClient) OpenSocket() error {
 
 // ReadMessages opens a websocket or polls on host arg identifying itself with controllerID arg and
 // returns a channel that relays messages coming down from the server
-func (rc *RelayClient) ReadMessages() (relayChan chan []byte) {
-	relayChan = make(chan []byte)
+func (rc *RelayClient) ReadMessages() (relayChan chan *Envelope, err error) {
+	relayChan = make(chan *Envelope)
+
+	processMsg := func(data []byte) {
+		env := new(Envelope)
+		if err := util.Unmarshal(data, env); err != nil {
+			log.Printf("Error parsing data: %s\n", err.Error())
+		} else {
+			relayChan <- env
+		}
+	}
 
 	if rc.socketConn != nil {
-		go func() {
-			for {
-				var msg = make([]byte, 512)
-				n, err := rc.socketConn.Read(msg)
-				if err != nil {
-					log.Printf("Error reading incoming message: %s", err.Error())
-					close(relayChan)
-					break
-				}
-
-				decrypted, err := security.DecryptFromString(rc.key, string(msg[:n]))
-				if err != nil {
-					log.Printf("Error decrypting incoming message: %s", err.Error())
-				} else {
-					relayChan <- decrypted
-				}
-			}
-		}()
+		go util.ReadFromWebSocket(rc.socketConn, processMsg)
 	} else {
 		go func() {
 			request, err := http.NewRequest(
 				"GET",
-				fmt.Sprintf("http://%s/messages", rc.relayHost),
+				fmt.Sprintf("http://%s/messages?to="+rc.id, rc.relayHost),
 				nil)
 			if err != nil {
 				log.Println("Error building request: " + err.Error())
@@ -90,7 +86,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan []byte) {
 
 			// download mailbox contents
 			msgResponse, err := ioutil.ReadAll(io.LimitReader(response.Body, 1048576))
-			var msgs [][]byte
+			var msgs []Envelope
 			err = rc.unmarshaller(msgResponse, msgs)
 			if err != nil {
 				log.Println("Error parsing request: " + err.Error())
@@ -98,12 +94,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan []byte) {
 			}
 
 			for _, msg := range msgs {
-				decrypted, err := security.DecryptFromString(rc.key, string(msg))
-				if err != nil {
-					log.Printf("Error decrypting incoming message: %s", err.Error())
-				} else {
-					relayChan <- decrypted
-				}
+				relayChan <- &msg
 			}
 			close(relayChan)
 		}()
@@ -113,7 +104,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan []byte) {
 }
 
 func (rc *RelayClient) SendMessage(env *Envelope) (msgResponse []byte, err error) {
-	if rc.socketConn != nil {
+	if rc.socketConn != nil { // && rc.socketConn.IsServerConn() {
 		return rc.sendMessageWS(env)
 	}
 
@@ -130,7 +121,7 @@ func (rc *RelayClient) sendMessageHTTP(env *Envelope) (msgResponse []byte, err e
 	if err != nil {
 		return
 	}
-	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Content-Length", strconv.Itoa(len(reqBody)))
 	request.ContentLength = int64(len(reqBody))
 
@@ -145,29 +136,32 @@ func (rc *RelayClient) sendMessageHTTP(env *Envelope) (msgResponse []byte, err e
 
 func (rc *RelayClient) sendMessageWS(env *Envelope) ([]byte, error) {
 	reqBody, err := rc.marshaller(env)
+	if err != nil {
+		return nil, err
+	}
 
-	_, err = rc.socketConn.Write(reqBody)
-	return []byte("Message sent and received."), err
+	err = websocket.Message.Send(rc.socketConn, reqBody)
+	return []byte("sent via websocket"), err
 }
 
 type Envelope struct {
-	Destination string
-	TTL         int64
-	Contents    string
+	To, From, Contents, Signature string
+	Expires                       *time.Time
 }
 
-func NewEnvelope(to string, ttl int64, contents interface{}, client *RelayClient) (env *Envelope, err error) {
-	env = &Envelope{Destination: to, TTL: ttl}
+func (rc *RelayClient) NewEnvelope(to string, expires *time.Time, contents interface{}) (env *Envelope, err error) {
+	env = &Envelope{To: to, From: rc.id, Expires: expires}
 
-	marshalled, err := client.Marshaller()(contents)
+	marshalled, err := rc.Marshaller()(contents)
 	if err != nil {
 		return
 	}
+	env.Contents = string(marshalled)
 
-	encryptedMarshalled, err := security.EncryptToString(client.key, marshalled)
-	if err != nil {
+	if env.Contents, err = security.EncryptToString(marshalled); err != nil {
 		return
 	}
-	env.Contents = encryptedMarshalled
+
+	env.Signature, err = security.SignToString(env.Contents)
 	return
 }
