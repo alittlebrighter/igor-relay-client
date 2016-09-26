@@ -10,16 +10,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/alittlebrighter/switchboard/models"
+	"github.com/alittlebrighter/switchboard/util"
+	uuid "github.com/satori/go.uuid"
 	"golang.org/x/net/websocket"
 
 	"github.com/alittlebrighter/igor-relay-client/security"
-	"github.com/alittlebrighter/switchboard/util"
 )
 
 const byteChunkSize = 256
 
 type RelayClient struct {
-	id           string
+	id           *uuid.UUID
 	relayHost    string
 	socketConn   *websocket.Conn
 	marshaller   func(interface{}) ([]byte, error)
@@ -34,14 +36,16 @@ func (rc *RelayClient) Unmarshaller() func(data []byte, v interface{}) error {
 	return rc.unmarshaller
 }
 
-func NewRelayClient(id, relayHost string, marshaller func(interface{}) ([]byte, error), unmarshaller func(data []byte, v interface{}) error) (*RelayClient, error) {
-	err := security.GenerateSharedKey()
-	return &RelayClient{id: id, relayHost: relayHost, marshaller: marshaller, unmarshaller: unmarshaller}, err
+func New(id *uuid.UUID, relayHost, keyfile string, marshaller func(interface{}) ([]byte, error), unmarshaller func(data []byte, v interface{}) error) *RelayClient {
+	security.GenerateSharedKey(keyfile)
+	return &RelayClient{id: id, relayHost: relayHost, marshaller: marshaller, unmarshaller: unmarshaller}
 }
 
+// OpenSocket attempts a connection to the public relay server via websockets
+// should come up with a retry mechanism
 func (rc *RelayClient) OpenSocket() error {
 	// origin can be a bogus URL so we'll just use it to identify the connection on the server
-	origin := "http://" + rc.id
+	origin := "http://" + rc.id.String()
 	url := "ws://" + rc.relayHost + "/socket"
 
 	ws, err := websocket.Dial(url, "", origin)
@@ -54,11 +58,11 @@ func (rc *RelayClient) OpenSocket() error {
 
 // ReadMessages opens a websocket or polls on host arg identifying itself with controllerID arg and
 // returns a channel that relays messages coming down from the server
-func (rc *RelayClient) ReadMessages() (relayChan chan *Envelope, err error) {
-	relayChan = make(chan *Envelope)
+func (rc *RelayClient) ReadMessages() (relayChan chan *models.Envelope, err error) {
+	relayChan = make(chan *models.Envelope, 10)
 
 	processMsg := func(data []byte) {
-		env := new(Envelope)
+		env := new(models.Envelope)
 		if err := util.Unmarshal(data, env); err != nil {
 			log.Printf("Error parsing data: %s\n", err.Error())
 		} else {
@@ -72,7 +76,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan *Envelope, err error) {
 		go func() {
 			request, err := http.NewRequest(
 				"GET",
-				fmt.Sprintf("http://%s/messages?to="+rc.id, rc.relayHost),
+				fmt.Sprintf("http://%s/messages?to="+rc.id.String(), rc.relayHost),
 				nil)
 			if err != nil {
 				log.Println("Error building request: " + err.Error())
@@ -86,7 +90,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan *Envelope, err error) {
 
 			// download mailbox contents
 			msgResponse, err := ioutil.ReadAll(io.LimitReader(response.Body, 1048576))
-			var msgs []Envelope
+			var msgs []models.Envelope
 			err = rc.unmarshaller(msgResponse, msgs)
 			if err != nil {
 				log.Println("Error parsing request: " + err.Error())
@@ -103,7 +107,7 @@ func (rc *RelayClient) ReadMessages() (relayChan chan *Envelope, err error) {
 	return
 }
 
-func (rc *RelayClient) SendMessage(env *Envelope) (msgResponse []byte, err error) {
+func (rc *RelayClient) SendMessage(env *models.Envelope) (msgResponse []byte, err error) {
 	if rc.socketConn != nil { // && rc.socketConn.IsServerConn() {
 		return rc.sendMessageWS(env)
 	}
@@ -111,7 +115,7 @@ func (rc *RelayClient) SendMessage(env *Envelope) (msgResponse []byte, err error
 	return rc.sendMessageHTTP(env)
 }
 
-func (rc *RelayClient) sendMessageHTTP(env *Envelope) (msgResponse []byte, err error) {
+func (rc *RelayClient) sendMessageHTTP(env *models.Envelope) (msgResponse []byte, err error) {
 	reqBody, err := rc.marshaller(env)
 
 	request, err := http.NewRequest(
@@ -134,7 +138,7 @@ func (rc *RelayClient) sendMessageHTTP(env *Envelope) (msgResponse []byte, err e
 	return
 }
 
-func (rc *RelayClient) sendMessageWS(env *Envelope) ([]byte, error) {
+func (rc *RelayClient) sendMessageWS(env *models.Envelope) ([]byte, error) {
 	reqBody, err := rc.marshaller(env)
 	if err != nil {
 		return nil, err
@@ -144,13 +148,8 @@ func (rc *RelayClient) sendMessageWS(env *Envelope) ([]byte, error) {
 	return []byte("sent via websocket"), err
 }
 
-type Envelope struct {
-	To, From, Contents, Signature string
-	Expires                       *time.Time
-}
-
-func (rc *RelayClient) NewEnvelope(to string, expires *time.Time, contents interface{}) (env *Envelope, err error) {
-	env = &Envelope{To: to, From: rc.id, Expires: expires}
+func (rc *RelayClient) NewEnvelope(to *uuid.UUID, expires *time.Time, contents interface{}) (env *models.Envelope, err error) {
+	env = &models.Envelope{To: to, From: rc.id, Expires: expires}
 
 	marshalled, err := rc.Marshaller()(contents)
 	if err != nil {

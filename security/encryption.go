@@ -17,8 +17,12 @@ const (
 
 var sharedKeyFile = "shared.key"
 
-func GenerateSharedKey() error {
-	os.Remove(sharedKeyFile)
+func GenerateSharedKey(filename string) error {
+	sharedKeyFile = filename
+
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		return nil
+	}
 
 	key, err := newSecureRandom(symmetricKeyLen)
 	if err != nil {
